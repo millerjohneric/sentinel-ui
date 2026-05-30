@@ -313,6 +313,10 @@ button:disabled {
     background: #6c757d;
 }
 
+.dot.starting {
+    background: #ffc107;
+}
+
 @keyframes pulse {
     0%, 100% { opacity: 1; }
     50% { opacity: 0.5; }

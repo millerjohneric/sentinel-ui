@@ -1,0 +1,12 @@
+Windows Registry Editor Version 5.00
+
+[HKEY_CLASSES_ROOT\sentinelui]
+@="URL:Sentinel UI Protocol"
+"URL Protocol"=""
+
+[HKEY_CLASSES_ROOT\sentinelui\shell]
+
+[HKEY_CLASSES_ROOT\sentinelui\shell\open]
+
+[HKEY_CLASSES_ROOT\sentinelui\shell\open\command]
+@="powershell.exe -ExecutionPolicy Bypass -File \"C:\\Source\\GEEK\\Sentinel\\sentinel-ui\\launch-ui.ps1\""
