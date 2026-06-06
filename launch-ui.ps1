@@ -104,7 +104,7 @@ function Wait-ForUrl {
 }
 
 # FIXED: Route through your Nginx domain setup to satisfy SSL validation
-$UiUrl = 'https://localhost:3005/'
+$UiUrl = 'http://localhost:3005/'
 Write-Host "WAITING: Sentinel UI to become available at $UiUrl" -ForegroundColor Gray
 if (Wait-ForUrl -Url $UiUrl -TimeoutSeconds 30) {
     Write-Host "OPENING: Browser to $UiUrl" -ForegroundColor Green
