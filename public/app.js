@@ -179,7 +179,7 @@ async function loadConfig() {
 
 async function startSync() {
     try {
-        const res = await fetch('/api/sync/start', { method: 'POST' });
+        const res = await fetch('/api/start/sync', { method: 'POST' }); // Must be /api/start/sync
         if (!res.ok) {
             const error = await res.json();
             alert('Error: ' + error.error);

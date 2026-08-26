@@ -1,8 +1,8 @@
 {
   "name": "sentinel-ui",
   "version": "1.0.0",
-  "description": "Web UI for Sentinel Media Sync",
   "type": "module",
+  "description": "Web UI for Sentinel Media Sync",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
