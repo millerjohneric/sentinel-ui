@@ -33,7 +33,8 @@ fi
 # Start the server
 echo ""
 echo "🚀 Starting Sentinel UI Server..."
-echo "   Opening http://localhost:3000 in your browser..."
+echo "   Sentinel UI: http://localhost:3006"
+echo "   Website:     http://localhost:3000 (when running)"
 echo ""
 
 cd "$SCRIPT_DIR"

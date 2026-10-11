@@ -31,10 +31,13 @@ npm install
 npm start
 ```
 
-The UI will be available at **http://localhost:3001**
+Direct localhost access does not prompt for a login. The UI also creates a random password for requests arriving through Nginx and stores it in the ignored local `.env` file. For public HTTPS access, use the values of `SENTINEL_UI_USERNAME` (default `sentinel-admin`) and `SENTINEL_UI_PASSWORD` from that file when the browser prompts for HTTP Basic Authentication.
+
+The UI backend will be available locally at **http://localhost:3006**. Through Nginx, the secure public address is **https://millerjohneric.asuscomm.com:3005**.
 
 > **Port Assignment**:
-> - **3001** = Sentinel UI (admin control panel)
+> - **3005 HTTPS** = Sentinel UI through Nginx (proxied to backend port 3006)
+> - **3006 HTTP** = Sentinel UI backend on localhost
 > - **3000** = Docusaurus Website (generated after sync)
 >
 > Both can run simultaneously without conflict.
@@ -61,7 +64,7 @@ sentinel-ui/
 ## How It Works
 
 1. **Backend (Node.js/Express)**
-   - Spawns the PowerShell `Sentinel-Core.ps1` script
+   - Spawns `sentinel-media-sync/Run-Sentinel.ps1`
    - Streams stdout/stderr to connected clients
    - Manages configuration via YAML files
    - Provides REST API for status and control
@@ -81,14 +84,15 @@ sentinel-ui/
 Create a `.env` file if you need to customize:
 
 ```env
-PORT=3000
+PORT=3006
+WEBSITE_PORT=3000
 SENTINEL_ROOT=C:\Source\GEEK\Sentinel
 ```
 
 ## Troubleshooting
 
-### "PowerShell script not found"
-Make sure the path to `Sentinel-Core.ps1` is correct in `server.js`
+### "Sentinel runner not found"
+Confirm `sentinel-media-sync/Run-Sentinel.ps1` exists beside the `sentinel-ui` folder.
 
 ### "Cannot connect to localhost:3000"
 Ensure the server is running: `npm start`

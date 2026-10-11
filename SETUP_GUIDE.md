@@ -46,11 +46,15 @@ npm run dev
 
 ### 3. Open in Browser
 
-Navigate to: **http://localhost:3001**
+Navigate locally to: **http://localhost:3006**
+Remote access through Nginx: **https://millerjohneric.asuscomm.com:3005**
 
 > **Port Assignment**:
-> - **3001** = Sentinel UI (this admin dashboard)
+> - **3005 HTTPS** = Sentinel UI through Nginx (proxied to backend port 3006)
+> - **3006 HTTP** = Sentinel UI backend on localhost
 > - **3000** = Docusaurus Website (if running after sync)
+
+Direct localhost access does not prompt for a login. The UI stores a generated password in the ignored local `.env` file for requests through Nginx; public HTTPS access prompts for `SENTINEL_UI_USERNAME` (default `sentinel-admin`) and `SENTINEL_UI_PASSWORD` from that file.
 
 You should see the Sentinel dashboard with:
 - 📊 Status indicator (Running / Idle)
@@ -96,7 +100,7 @@ Frontend (Browser)
 Backend (Node.js/Express)
     ↓ Spawns PowerShell process
     ↓ Streams output
-Sentinel-Core.ps1
+sentinel-media-sync/Run-Sentinel.ps1
 ```
 
 ### Backend Server
@@ -115,9 +119,11 @@ Responsibilities:
 GET  /api/status      — Get current sync status
 GET  /api/config      — Get current configuration
 POST /api/config      — Save updated configuration
-POST /api/sync/start  — Start a sync process
-POST /api/sync/stop   — Stop current sync process
-GET  /api/logs        — Get historical logs (TODO)
+POST /api/start/sync  — Start a sync process
+POST /api/stop/sync   — Stop current sync process
+POST /api/start/website — Start the configured Docusaurus site
+POST /api/stop/website  — Stop the website process started by this UI
+GET  /api/logs        — Get recent in-memory logs
 ```
 
 ### Frontend UI
@@ -144,12 +150,12 @@ node --version
 npm --version
 ```
 
-### Problem: "Port 3001 is already in use"
+### Problem: "Port 3006 is already in use"
 
 **Solution**: Use a different port via environment variable:
 
 ```powershell
-$env:PORT=3002
+$env:PORT=3007
 npm start
 ```
 
@@ -170,7 +176,7 @@ npm install
 ### Problem: Sync won't start or stops immediately
 
 **Issues to check**:
-1. Does `Sentinel-Core.ps1` exist at the path in `server.js`?
+1. Does `sentinel-media-sync/Run-Sentinel.ps1` exist beside the UI folder?
 2. Do you have PowerShell execution policies set correctly?
 3. Check browser console (F12) and terminal for error messages
 
@@ -189,18 +195,19 @@ Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
 
 ### Problem: Website won't start on port 3000 (port conflict)
 
-**Cause**: Port 3000 is in use (Sentinel UI uses 3001, but the website also defaults to 3000).
+**Cause**: Port 3000 is already in use by another process. The Sentinel UI uses port 3006 locally.
 
 **Solution**: Start the website on a different port:
 
 ```powershell
-cd website
-PORT=3002 npm start
+cd C:\Source_Studio\website
+npm start -- --port 3002
 # Or specify port in docusaurus.config.js
 ```
 
 **Port Reference**:
-- **3001** = Sentinel UI (admin control panel)
+- **3005 HTTPS** = Sentinel UI through Nginx
+- **3006 HTTP** = Sentinel UI backend on localhost
 - **3000** = Docusaurus Website (default)
 - **3002+** = Alternative ports if needed
 
@@ -240,7 +247,7 @@ The current UI is functional and can be extended with:
 
 ### Integration with Console Script
 
-The PowerShell script (`Sentinel-Core.ps1`) continues to work as before. You can:
+The PowerShell runner (`sentinel-media-sync/Run-Sentinel.ps1`) continues to work as before. You can:
 - Run it from command line directly
 - Run it via Task Scheduler
 - Run it via the UI
@@ -297,19 +304,7 @@ API handlers are in `server.js`. Common additions:
 
 ## Deployment
 
-### Local Network
-
-To access from other machines on your network:
-
-1. Find your computer's IP:
-   ```powershell
-   ipconfig | findstr "IPv4"
-   ```
-
-2. Access from another machine:
-   ```
-   http://<YOUR_IP>:3000
-   ```
+The UI backend binds only to localhost on port 3006. For remote access, use the configured HTTPS Nginx proxy at `https://millerjohneric.asuscomm.com:3005`; the browser will request the generated Basic Auth credentials on first launch.
 
 ### Production Deployment
 
@@ -324,7 +319,7 @@ Options:
 If you prefer the original console-based approach, you can still run:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File sentinel-media-sync/Sentinel-Core.ps1
+powershell -ExecutionPolicy Bypass -File sentinel-media-sync/Run-Sentinel.ps1
 ```
 
 The UI and console interfaces coexist—use whichever you prefer.

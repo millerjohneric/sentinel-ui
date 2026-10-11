@@ -10,26 +10,8 @@ let appState = {
 };
 appState.uiUp = false;
 appState.websiteUp = false;
+appState.statusCheckedAt = null;
 let autoPollTimer = null;
-
-// Clean helper to check website status purely via frontend without triggering CORS blocks
-async function checkWebsiteDirectly() {
-    try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 2000);
-        
-        // Using 'no-cors' mode allows the browser to make the request to port 3000 across origins without crashing
-        await fetch('http://localhost:3000/docs/culinary-cuisine', { 
-            method: 'GET', 
-            mode: 'no-cors',
-            signal: controller.signal 
-        });
-        clearTimeout(timeoutId);
-        return true; // If the server answered at all, it's alive!
-    } catch (e) {
-        return false;
-    }
-}
 
 function getPollIntervalSeconds() {
     if (!appState.config) return 30;
@@ -64,11 +46,10 @@ function setupAutoPoll() {
             if (statusRes.ok) {
                 const s = await statusRes.json();
                 appState.syncing = s.syncing;
-                appState.uiUp = s.uiUp === undefined ? true : s.uiUp;
+                appState.uiUp = !!s.uiActive;
+                appState.websiteUp = !!s.websiteActive;
+                appState.statusCheckedAt = Date.now();
             }
-            
-            // Ping the website directly via frontend no-cors rule
-            appState.websiteUp = await checkWebsiteDirectly();
             updateUI();
         } catch (e) {
             console.error('Auto-poll error', e);
@@ -102,11 +83,16 @@ document.addEventListener('DOMContentLoaded', () => {
     
     // 3. Attach listeners immediately
     attachEventListeners();
+    setInterval(() => {
+        const heartbeatText = document.getElementById('heartbeatText');
+        if (heartbeatText) heartbeatText.textContent = getHeartbeatText();
+    }, 1000);
 });
 
 // Socket events
 socket.on('status', (data) => {
     appState.syncing = data.syncing;
+    appState.statusCheckedAt = Date.now();
     updateUI();
 });
 
@@ -127,7 +113,7 @@ socket.on('sync:complete', (data) => {
     appState.syncing = false;
     appState.logs.push({
         type: data.success ? 'info' : 'error',
-        message: data.success ? '✓ Sync completed successfully' : `✗ Sync failed (code: ${data.code})`
+        message: data.success ? '[OK] Sync completed successfully' : `[ERROR] Sync failed (code: ${data.code})`
     });
     updateLogs();
     updateUI();
@@ -148,10 +134,9 @@ async function loadStatus() {
         const res = await fetch('/api/status');
         const data = await res.json();
         appState.syncing = data.syncing;
-        appState.uiUp = data.uiUp === undefined ? true : data.uiUp;
-        
-        // Use direct frontend health check bypass
-        appState.websiteUp = await checkWebsiteDirectly();
+        appState.uiUp = !!data.uiActive;
+        appState.websiteUp = !!data.websiteActive;
+        appState.statusCheckedAt = Date.now();
         updateUI();
     } catch (error) {
         console.error('Failed to load status:', error);
@@ -192,7 +177,7 @@ async function startSync() {
 async function stopSync() {
     if (confirm('Stop the current sync process?')) {
         try {
-            const res = await fetch('/api/sync/stop', { method: 'POST' });
+            const res = await fetch('/api/stop/sync', { method: 'POST' });
             if (!res.ok) {
                 const error = await res.json();
                 alert('Error: ' + error.error);
@@ -220,7 +205,7 @@ async function saveConfig() {
 }
 
 async function toggleService(action, service) {
-    const logName = service === 'ui' ? 'UI (3005)' : 'Website (3000)';
+    const logName = 'Website (3000)';
     try {
         const res = await fetch(`/api/${action}/${service}`, { method: 'POST' });
         if (res.ok) {
@@ -242,12 +227,18 @@ async function toggleService(action, service) {
 function renderApp() {
     const root = document.getElementById('root');
     if (!root) return;
+    const localBrowser = ['localhost', '127.0.0.1'].includes(window.location.hostname);
+    const localUiLink = localBrowser
+        ? '<a href="http://127.0.0.1:3006" target="_blank" style="text-decoration: none; font-weight: bold; color: #007acc;">Local UI</a> | '
+        : '';
+    const siteLink = localBrowser
+        ? 'http://127.0.0.1:3000/docs/culinary-cuisine'
+        : 'https://millerjohneric.asuscomm.com/docs/culinary-cuisine';
     
     root.innerHTML = `
         <div class="container">
             <div class="header">
                 <h1>
-                    <span>📡</span>
                     <span>Sentinel Media Sync</span>
                 </h1>
                 <p>Unified media archive & website generation engine</p>
@@ -255,31 +246,30 @@ function renderApp() {
 
             <div class="content">
                 <div class="ports-focus-section" style="margin-bottom: 20px; background: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 4px 15px rgba(0,0,0,0.05);">
-                    <h2 style="margin-top: 0; margin-bottom: 15px; font-size: 1.3em; display: flex; align-items: center; gap: 8px;">📡 Ports & Access Links</h2>
+                    <h2 style="margin-top: 0; margin-bottom: 15px; font-size: 1.3em; display: flex; align-items: center; gap: 8px;">Ports & Access Links</h2>
                     <div style="display: flex; flex-direction: column; gap: 12px;">
                         <div style="display: flex; align-items: center; justify-content: space-between; background: rgba(0,0,0,0.02); padding: 12px 16px; border-radius: 6px; border-left: 4px solid #007acc;">
                             <span id="uiPortIndicator" class="status-indicator ${appState.uiUp ? 'running' : 'idle'}" style="padding: 6px 12px; font-weight: bold; border-radius: 4px; display: flex; align-items: center; gap: 8px;"> 
-                                <span id="uiDot" class="dot ${appState.uiUp ? 'active' : 'inactive'}"></span> UI:3005
+                                <span id="uiDot" class="dot ${appState.uiUp ? 'active' : 'inactive'}"></span> UI:3006
                             </span>
                             <div style="display: flex; gap: 4px; align-items: center;">
-                                <button class="primary" id="miniStartUiBtn" onclick="toggleService('start', 'ui')" style="padding: 6px 12px; font-size: 0.95em; border-radius: 4px;" ${appState.uiUp ? 'disabled' : ''}>▶ Start</button>
-                                <button class="danger" id="miniStopUiBtn" onclick="toggleService('stop', 'ui')" style="padding: 6px 12px; font-size: 0.95em; border-radius: 4px;" ${!appState.uiUp ? 'disabled' : ''}>⏹ Stop</button>
                                 <span style="margin-left: 15px; font-size: 0.95em;">
-                                    ➔ <a href="http://localhost:3005" target="_blank" style="text-decoration: none; font-weight: bold; color: #007acc;">🔗 Local UI</a> 
-                                    | <a href="https://millerjohneric.asuscomm.com:3005" target="_blank" style="text-decoration: none; font-weight: bold; color: #28a745;">🔒 External UI</a>
+                                    ${localUiLink}
+                                    <a href="https://millerjohneric.asuscomm.com:3005" target="_blank" style="text-decoration: none; font-weight: bold; color: #28a745;">External UI</a>
                                 </span>
                             </div>
                         </div>
                         <div style="display: flex; align-items: center; justify-content: space-between; background: rgba(0,0,0,0.02); padding: 12px 16px; border-radius: 6px; border-left: 4px solid #28a745;">
                             <span id="websitePortIndicator" class="status-indicator ${appState.websiteUp ? 'running' : 'idle'}" style="padding: 6px 12px; font-weight: bold; border-radius: 4px; display: flex; align-items: center; gap: 8px;"> 
-                                <span id="websiteDot" class="dot ${appState.websiteUp ? 'active' : 'inactive'}"></span> Website:3000
+                                <span id="websiteDot" class="dot ${appState.websiteUp ? 'active' : appState.syncing ? 'waiting' : 'inactive'}"></span>
+                                <span id="websiteStatusText">${appState.websiteUp ? 'Website: Online' : appState.syncing ? 'Website: Waiting for sync' : 'Website: Offline'}</span>
                             </span>
                             <div style="display: flex; gap: 4px; align-items: center;">
-                                <button class="primary" id="miniStartWebsiteBtn" onclick="toggleService('start', 'website')" style="padding: 6px 12px; font-size: 0.95em; border-radius: 4px;" ${appState.websiteUp ? 'disabled' : ''}>▶ Start</button>
-                                <button class="danger" id="miniStopWebsiteBtn" onclick="toggleService('stop', 'website')" style="padding: 6px 12px; font-size: 0.95em; border-radius: 4px;" ${!appState.websiteUp ? 'disabled' : ''}>⏹ Stop</button>
+                                <button class="primary" id="miniStartWebsiteBtn" onclick="toggleService('start', 'website')" style="padding: 6px 12px; font-size: 0.95em; border-radius: 4px;" ${appState.websiteUp ? 'disabled' : ''}>Start</button>
+                                <button class="danger" id="miniStopWebsiteBtn" onclick="toggleService('stop', 'website')" style="padding: 6px 12px; font-size: 0.95em; border-radius: 4px;" ${!appState.websiteUp ? 'disabled' : ''}>Stop</button>
                                 <span style="margin-left: 15px; font-size: 0.95em;">
-                                    ➔ <a href="http://localhost:3000/docs/culinary-cuisine" target="_blank" style="text-decoration: none; font-weight: bold; color: #007acc;">🔗 Local Site</a> 
-                                    | <a href="https://millerjohneric.asuscomm.com/docs" target="_blank" style="text-decoration: none; font-weight: bold; color: #28a745;">🔒 External Site</a>
+                                    <a href="${siteLink}" target="_blank" style="text-decoration: none; font-weight: bold; color: #007acc;">Open Site</a>
+                                    | <a href="https://millerjohneric.asuscomm.com/docs" target="_blank" style="text-decoration: none; font-weight: bold; color: #28a745;">External Site</a>
                                 </span>
                             </div>
                         </div>
@@ -293,6 +283,7 @@ function renderApp() {
                             <span class="dot ${appState.syncing ? 'active' : 'inactive'}"></span>
                             <span>${appState.syncing ? 'Running' : 'Idle'}</span>
                         </div>
+                        <div class="heartbeat-line"><span class="heartbeat-dot" aria-hidden="true"></span><span id="heartbeatText">${getHeartbeatText()}</span></div>
                     </div>
                     <div class="status-card">
                         <h3>Log Entries</h3>
@@ -301,14 +292,14 @@ function renderApp() {
                 </div>
 
                 <div class="controls" style="margin-bottom: 20px;">
-                    <button class="primary" onclick="startSync()" ${appState.syncing ? 'disabled' : ''}>
-                        ▶ Start Sync
+                    <button class="primary" id="startSyncBtn" onclick="startSync()" ${appState.syncing ? 'disabled' : ''}>
+                        Start Sync
                     </button>
-                    <button class="danger" onclick="stopSync()" ${!appState.syncing ? 'disabled' : ''}>
-                        ⏹ Stop Sync
+                    <button class="danger" id="stopSyncBtn" onclick="stopSync()" ${!appState.syncing ? 'disabled' : ''}>
+                        Stop Sync
                     </button>
                     <button class="secondary" id="refreshStatusBtn">
-                        🔄 Refresh Status
+                        Refresh Status
                     </button>
                     <label style="display:flex;align-items:center;gap:8px;" title="When enabled, port polling runs only while a sync is active">
                         <input type="checkbox" id="pollWhileSyncToggle"> Poll Only While Sync
@@ -320,7 +311,7 @@ function renderApp() {
                 </div>
 
                 <div class="section">
-                    <h2>📋 Sync Logs</h2>
+                    <h2>Sync Logs</h2>
                     <div class="logs-container" id="logsContainer">
                         ${appState.logs.length === 0 
                             ? '<div class="log-entry info">Ready to sync...</div>' 
@@ -330,12 +321,12 @@ function renderApp() {
                 </div>
 
                 <div class="section">
-                    <h2>⚙️ Configuration</h2>
+                    <h2>Configuration</h2>
                     <div class="config-form" id="configForm">
                         <p style="color: #666; font-size: 0.9em;">Loading configuration...</p>
                     </div>
                     <button class="primary" onclick="saveConfig()" style="margin-top: 15px;">
-                        💾 Save Configuration
+                        Save Configuration
                     </button>
                 </div>
             </div>
@@ -360,8 +351,8 @@ function updateUI() {
         }
     }
 
-    const startBtn = document.querySelector('button.primary');
-    const stopBtn = document.querySelector('button.danger');
+    const startBtn = document.getElementById('startSyncBtn');
+    const stopBtn = document.getElementById('stopSyncBtn');
     if (startBtn) startBtn.disabled = appState.syncing;
     if (stopBtn) stopBtn.disabled = !appState.syncing;
 
@@ -381,17 +372,24 @@ function updateUI() {
         websiteIndicator.classList.toggle('idle', !appState.websiteUp);
         websiteDot.classList.toggle('active', appState.websiteUp);
         websiteDot.classList.toggle('inactive', !appState.websiteUp);
+        websiteDot.classList.toggle('waiting', !appState.websiteUp && appState.syncing);
+        const websiteText = document.getElementById('websiteStatusText');
+        if (websiteText) websiteText.textContent = appState.websiteUp ? 'Website: Online' : appState.syncing ? 'Website: Waiting for sync' : 'Website: Offline';
     }
+    const heartbeatText = document.getElementById('heartbeatText');
+    if (heartbeatText) heartbeatText.textContent = getHeartbeatText();
 
-    const miniStartUi = document.getElementById('miniStartUiBtn');
-    const miniStopUi = document.getElementById('miniStopUiBtn');
     const miniStartWeb = document.getElementById('miniStartWebsiteBtn');
     const miniStopWeb = document.getElementById('miniStopWebsiteBtn');
 
-    if (miniStartUi) miniStartUi.disabled = appState.uiUp;
-    if (miniStopUi) miniStopUi.disabled = !appState.uiUp;
     if (miniStartWeb) miniStartWeb.disabled = appState.websiteUp;
     if (miniStopWeb) miniStopWeb.disabled = !appState.websiteUp;
+}
+
+function getHeartbeatText() {
+    if (!appState.statusCheckedAt) return 'Waiting for first status check';
+    const seconds = Math.max(0, Math.floor((Date.now() - appState.statusCheckedAt) / 1000));
+    return seconds < 2 ? 'Status checked just now' : `Status checked ${seconds}s ago`;
 }
 
 function updateLogs() {
@@ -441,7 +439,7 @@ function attachEventListeners() {
     if (refreshBtn) {
         refreshBtn.addEventListener('click', async () => {
             refreshBtn.disabled = true;
-            refreshBtn.textContent = '🔄 Refreshing...';
+            refreshBtn.textContent = 'Refreshing...';
             try {
                 await loadStatus();
                 const logsRes = await fetch('/api/logs');
@@ -453,15 +451,15 @@ function attachEventListeners() {
                 
                 // Add explicit feedback on manual refresh click
                 appState.logs.push({ 
-                    type: appState.websiteUp ? 'info' : 'warning', 
-                    message: appState.websiteUp ? 'Website is up (3000)' : 'Website is down (3000)' 
+                    type: appState.websiteUp ? 'info' : appState.syncing ? 'info' : 'warning',
+                    message: appState.websiteUp ? 'Website is online (port 3000)' : appState.syncing ? 'Sync is still running; the website will start after it completes successfully.' : 'Website is offline (port 3000)'
                 });
                 updateLogs();
             } catch (e) {
                 console.error('Refresh failed', e);
             }
             refreshBtn.disabled = false;
-            refreshBtn.textContent = '🔄 Refresh Status';
+            refreshBtn.textContent = 'Refresh Status';
         });
     }
 

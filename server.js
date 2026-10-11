@@ -5,18 +5,70 @@ import { Server } from 'socket.io';
 import fs, { existsSync, readFileSync } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { exec, spawn } from 'child_process';
+import { exec, execFile, spawn } from 'child_process';
+import net from 'net';
+import { randomBytes, timingSafeEqual } from 'crypto';
 import YAML from 'yaml';
+import dotenv from 'dotenv';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const dotenvPath = path.join(__dirname, '.env');
+dotenv.config({ path: dotenvPath });
+
+const UI_USERNAME = process.env.SENTINEL_UI_USERNAME || 'sentinel-admin';
+if (!process.env.SENTINEL_UI_PASSWORD) {
+  const generatedPassword = randomBytes(32).toString('base64url');
+  const envContents = existsSync(dotenvPath) ? readFileSync(dotenvPath, 'utf8') : '';
+  const separator = envContents && !envContents.endsWith('\n') ? '\n' : '';
+  const usernameExistsInFile = /^SENTINEL_UI_USERNAME\s*=/m.test(envContents);
+  const usernameEntry = usernameExistsInFile ? '' : `SENTINEL_UI_USERNAME=${UI_USERNAME}\n`;
+  fs.appendFileSync(dotenvPath, `${separator}${usernameEntry}SENTINEL_UI_PASSWORD=${generatedPassword}\n`, { encoding: 'utf8', mode: 0o600 });
+  process.env.SENTINEL_UI_PASSWORD = generatedPassword;
+  console.log(`Generated Sentinel UI login. Username: ${UI_USERNAME}. Password is stored in ${dotenvPath}.`);
+}
+const UI_PASSWORD = process.env.SENTINEL_UI_PASSWORD;
+
+function hasValidUiCredentials(authorization) {
+  if (!authorization?.startsWith('Basic ')) return false;
+  let username;
+  let password;
+  try {
+    const decoded = Buffer.from(authorization.slice(6), 'base64').toString('utf8');
+    const separatorIndex = decoded.indexOf(':');
+    if (separatorIndex < 0) return false;
+    username = decoded.slice(0, separatorIndex);
+    password = decoded.slice(separatorIndex + 1);
+  } catch {
+    return false;
+  }
+  const suppliedUser = Buffer.from(username);
+  const expectedUser = Buffer.from(UI_USERNAME);
+  const suppliedPassword = Buffer.from(password);
+  const expectedPassword = Buffer.from(UI_PASSWORD);
+  const userMatches = suppliedUser.length === expectedUser.length && timingSafeEqual(suppliedUser, expectedUser);
+  const passwordMatches = suppliedPassword.length === expectedPassword.length && timingSafeEqual(suppliedPassword, expectedPassword);
+  return userMatches && passwordMatches;
+}
+
+function isLocalDirectConnection(remoteAddress, headers = {}) {
+  const loopback = ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(remoteAddress);
+  const forwardedByProxy = Boolean(headers['x-real-ip'] || headers['x-forwarded-for']);
+  return loopback && !forwardedByProxy;
+}
 
 const app = express();
-const PORT = process.env.PORT || 3005;
+const PORT = Number(process.env.PORT || 3006);
+const WEBSITE_PORT = Number(process.env.WEBSITE_PORT || 3000);
 const SENTINEL_ROOT = path.resolve(__dirname, '..');
 
-const CONFIG_FILE = process.env.CONFIG_FILE || path.join(SENTINEL_ROOT, 'sentinel-media-sync', 'Sentinel-Config.yml');
+const CONFIG_FILE = process.env.CONFIG_FILE || process.env.CONFIG_PATH || path.join(SENTINEL_ROOT, 'sentinel-media-sync', 'Sentinel-Config.yml');
 
+app.use((req, res, next) => {
+  if (isLocalDirectConnection(req.socket.remoteAddress, req.headers) || hasValidUiCredentials(req.headers.authorization)) return next();
+  res.set('WWW-Authenticate', 'Basic realm="Sentinel UI", charset="UTF-8"');
+  return res.status(401).send('Sentinel UI login required.');
+});
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.join(__dirname, 'public')));
@@ -25,6 +77,8 @@ let websiteProcess = null;
 let syncProcess = null;
 let recentLogs = [];
 let isSyncing = false;
+
+const RUN_SENTINEL_SCRIPT = path.join(SENTINEL_ROOT, 'sentinel-media-sync', 'Run-Sentinel.ps1');
 
 // Create HTTP/HTTPS server and attach Socket.io
 const keyPath = path.join(__dirname, 'key.pem');
@@ -42,6 +96,11 @@ if (existsSync(keyPath) && existsSync(certPath)) {
 }
 
 const io = new Server(server);
+
+io.use((socket, next) => {
+  if (isLocalDirectConnection(socket.handshake.address, socket.handshake.headers) || hasValidUiCredentials(socket.handshake.headers.authorization)) return next();
+  return next(new Error('Unauthorized'));
+});
 
 io.on('connection', (socket) => {
   // Send current status immediately upon client connection
@@ -80,42 +139,32 @@ function getWebsitePath() {
   const config = parseConfig();
   if (config && Array.isArray(config.Locations)) {
     const webRoot = config.Locations.find(loc => loc.RootType === 'web-root' || loc.Role === 'Website');
-    if (webRoot && webRoot.Path) {
-      return webRoot.Path;
+    if (webRoot && (webRoot.SitePath || webRoot.Path)) {
+      return webRoot.SitePath || webRoot.Path;
     }
   }
   return path.join(SENTINEL_ROOT, 'website');
 }
 
-function killProcessOnPort(port, callback) {
-  const isWindows = process.platform === 'win32';
-  if (isWindows) {
-    const cmd = `for /f "tokens=5" %a in ('netstat -aon ^| findstr :${port} ^| findstr LISTENING') do taskkill /F /PID %a`;
-    exec(cmd, () => {
-      if (callback) callback();
-    });
-  } else {
-    exec(`fuser -k ${port}/tcp`, () => {
-      if (callback) callback();
-    });
-  }
-}
-
 function checkPortInUse(port) {
   return new Promise((resolve) => {
-    const isWindows = process.platform === 'win32';
-    const cmd = isWindows
-      ? `netstat -aon | findstr :${port} | findstr LISTENING`
-      : `lsof -i:${port} -sTCP:LISTEN`;
-
-    exec(cmd, (err, stdout) => {
-      if (err || !stdout.trim()) {
-        resolve(false);
-      } else {
-        resolve(true);
-      }
+    const probe = net.createServer();
+    probe.once('error', (error) => resolve(error.code === 'EADDRINUSE'));
+    probe.listen(port, '127.0.0.1', () => {
+      probe.close(() => resolve(false));
     });
   });
+}
+
+function stopOwnedProcess(child) {
+  if (!child || child.exitCode !== null) return;
+  if (process.platform === 'win32' && child.pid) {
+    execFile('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], (error) => {
+      if (error) addLog('warning', `Could not stop process tree ${child.pid}: ${error.message}`);
+    });
+    return;
+  }
+  child.kill();
 }
 
 function launchDocusaurusServer(websitePath) {
@@ -127,16 +176,16 @@ function launchDocusaurusServer(websitePath) {
   addLog('info', `Starting Docusaurus server in ${websitePath}...`);
 
   if (existsSync(docusaurusBin)) {
-    websiteProcess = spawn(docusaurusBin, ['start', '--port', '3000'], {
+    websiteProcess = spawn(docusaurusBin, ['start', '--host', '127.0.0.1', '--port', String(WEBSITE_PORT)], {
       cwd: websitePath,
       shell: true,
-      env: { ...process.env, PORT: '3000' }
+      env: { ...process.env, PORT: String(WEBSITE_PORT) }
     });
   } else {
-    websiteProcess = spawn('npm', ['start', '--', '--port', '3000'], {
+    websiteProcess = spawn('npm', ['start', '--', '--host', '127.0.0.1', '--port', String(WEBSITE_PORT)], {
       cwd: websitePath,
       shell: true,
-      env: { ...process.env, PORT: '3000' }
+      env: { ...process.env, PORT: String(WEBSITE_PORT) }
     });
   }
 
@@ -154,6 +203,10 @@ function launchDocusaurusServer(websitePath) {
     addLog('info', `Website process exited with code ${code}`);
     websiteProcess = null;
   });
+  websiteProcess.on('error', (error) => {
+    addLog('error', `Failed to start Docusaurus: ${error.message}`);
+    websiteProcess = null;
+  });
 }
 app.post('/api/start/website', async (req, res) => {
   const websitePath = getWebsitePath();
@@ -164,66 +217,110 @@ app.post('/api/start/website', async (req, res) => {
     return res.status(404).json({ error: `Website directory does not exist: ${websitePath}` });
   }
 
-  killProcessOnPort(3000, () => {
-    try {
-      const docusaurusBinCmd = path.join(websitePath, 'node_modules', '.bin', 'docusaurus.cmd');
-      const docusaurusBinUnix = path.join(websitePath, 'node_modules', '.bin', 'docusaurus');
+  if (websiteProcess && websiteProcess.exitCode === null) {
+    return res.status(409).json({ error: 'Website process is already running.' });
+  }
+  if (await checkPortInUse(WEBSITE_PORT)) {
+    return res.status(409).json({ error: `Port ${WEBSITE_PORT} is already in use by a process Sentinel does not own. Stop it manually before starting the website.` });
+  }
 
-      if (!existsSync(docusaurusBinCmd) && !existsSync(docusaurusBinUnix)) {
-        addLog('warning', `Docusaurus binary not found in ${websitePath}. Running npm install...`);
-
-        exec('npm install', { cwd: websitePath }, (installErr) => {
-          if (installErr) {
-            addLog('error', `npm install failed in ${websitePath}: ${installErr.message}`);
-            return res.status(500).json({ error: 'Failed to install website dependencies.' });
-          }
-          addLog('info', 'Dependencies installed successfully. Launching Docusaurus...');
-          launchDocusaurusServer(websitePath);
-        });
-      } else {
-        launchDocusaurusServer(websitePath);
+  const docusaurusBinCmd = path.join(websitePath, 'node_modules', '.bin', 'docusaurus.cmd');
+  const docusaurusBinUnix = path.join(websitePath, 'node_modules', '.bin', 'docusaurus');
+  if (!existsSync(docusaurusBinCmd) && !existsSync(docusaurusBinUnix)) {
+    addLog('warning', `Docusaurus binary not found in ${websitePath}. Running npm install...`);
+    exec('npm install', { cwd: websitePath }, (installErr) => {
+      if (installErr) {
+        addLog('error', `npm install failed in ${websitePath}: ${installErr.message}`);
+        if (!res.headersSent) res.status(500).json({ error: 'Failed to install website dependencies.' });
+        return;
       }
+      addLog('info', 'Dependencies installed successfully. Launching Docusaurus...');
+      launchDocusaurusServer(websitePath);
+      if (!res.headersSent) res.json({ success: true, message: `Website startup sequence initiated in ${websitePath}.` });
+    });
+    return;
+  }
 
-      res.json({ success: true, message: `Website startup sequence initiated in ${websitePath}.` });
-    } catch (error) {
-      addLog('error', `Failed to start website: ${error.message}`);
-      res.status(500).json({ error: error.message });
-    }
-  });
+  launchDocusaurusServer(websitePath);
+  return res.json({ success: true, message: `Website startup sequence initiated in ${websitePath}.` });
 });
 
 app.post('/api/start/sync', (req, res) => {
     if (isSyncing) {
         return res.status(400).json({ error: 'Sync process is already running.' });
     }
+    if (!existsSync(RUN_SENTINEL_SCRIPT)) {
+      return res.status(404).json({ error: `Sentinel runner not found: ${RUN_SENTINEL_SCRIPT}` });
+    }
+
     isSyncing = true;
     addLog('info', 'Starting media sync process...');
-    // TODO: Add your sync child_process spawn logic here
     io.emit('status', { syncing: isSyncing });
-    res.json({ success: true, message: 'Sync started successfully.' });
+
+    syncProcess = spawn('powershell.exe', [
+      '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', RUN_SENTINEL_SCRIPT
+    ], { cwd: SENTINEL_ROOT, stdio: ['ignore', 'pipe', 'pipe'] });
+
+    syncProcess.stdout.on('data', (data) => addLog('info', data.toString().trim()));
+    syncProcess.stderr.on('data', (data) => addLog('error', data.toString().trim()));
+    syncProcess.on('error', (error) => {
+      addLog('error', `Failed to run media sync: ${error.message}`);
+      isSyncing = false;
+      syncProcess = null;
+      io.emit('status', { syncing: false });
+    });
+    syncProcess.on('close', (code) => {
+      syncProcess = null;
+      isSyncing = false;
+      io.emit('status', { syncing: false });
+      addLog(code === 0 ? 'info' : 'error', `Media sync exited with code ${code}.`);
+
+      if (code === 0) {
+        const config = parseConfig();
+        const website = config?.Locations?.find((loc) =>
+          loc.RootType === 'web-root' || (loc.Role === 'Website' && loc.SitePath)
+        );
+        const websitePath = website?.SitePath || website?.Path || getWebsitePath();
+        if (website?.AutoStart === true && existsSync(websitePath)) {
+          checkPortInUse(WEBSITE_PORT).then((websiteActive) => {
+            if (websiteActive) {
+              addLog('info', `Sync complete; website port ${WEBSITE_PORT} is already in use.`);
+              return;
+            }
+            addLog('info', `Sync complete; starting website from ${websitePath} on port ${WEBSITE_PORT}.`);
+            launchDocusaurusServer(websitePath);
+          }).catch((error) => addLog('error', `Website auto-start check failed: ${error.message}`));
+        }
+      }
+    });
+
+    res.json({ success: true, message: 'Media sync started.' });
 });
 
 app.post('/api/stop/sync', (req, res) => {
     if (!isSyncing) {
         return res.status(400).json({ error: 'No sync process is currently running.' });
     }
-    isSyncing = false;
     addLog('warning', 'Stopping media sync process...');
-    // TODO: Add your sync kill logic here
-    io.emit('status', { syncing: isSyncing });
-    res.json({ success: true, message: 'Sync stopped successfully.' });
+    if (syncProcess) {
+      stopOwnedProcess(syncProcess);
+    } else {
+      isSyncing = false;
+      io.emit('status', { syncing: false });
+    }
+    res.json({ success: true, message: 'Sync stop requested.' });
 });
 
 app.get('/api/status', async (req, res) => {
   const uiActive = await checkPortInUse(PORT);
-  const websiteActive = await checkPortInUse(3000);
+  const websiteActive = await checkPortInUse(WEBSITE_PORT);
 
   res.json({
     status: isSyncing ? 'Syncing' : 'Idle',
     syncing: isSyncing,
     uiPort: PORT,
     uiActive,
-    websitePort: 3000,
+    websitePort: WEBSITE_PORT,
     websiteActive,
     logCount: recentLogs.length,
     websitePath: getWebsitePath()
@@ -258,16 +355,11 @@ app.get('/api/logs', (req, res) => {
 
 app.post('/api/stop/website', (req, res) => {
   addLog('info', 'Requested website stop.');
-  killProcessOnPort(3000, () => {
-    if (websiteProcess) {
-      try {
-        websiteProcess.kill();
-      } catch (e) {}
-      websiteProcess = null;
-    }
-    addLog('info', 'Website process stopped.');
-    res.json({ success: true, message: 'Website server stopped on port 3000.' });
-  });
+  if (!websiteProcess || websiteProcess.exitCode !== null) {
+    return res.status(409).json({ error: 'Sentinel does not own a running website process; no process was stopped.' });
+  }
+  stopOwnedProcess(websiteProcess);
+  return res.json({ success: true, message: `Sentinel website process stopped on port ${WEBSITE_PORT}.` });
 });
 
 app.get('*', (req, res) => {
@@ -288,7 +380,7 @@ app.get('*', (req, res) => {
   }
 });
 
-server.listen(PORT, () => {
+server.listen(PORT, '127.0.0.1', () => {
   const protocol = existsSync(keyPath) && existsSync(certPath) ? 'https' : 'http';
   console.log(`Sentinel UI Engine running on ${protocol}://localhost:${PORT}`);
   addLog('info', `Sentinel UI Engine running on ${protocol}://localhost:${PORT}`);

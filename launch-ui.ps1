@@ -63,8 +63,15 @@ $EngineRoot = $GitHubRepoPath
 
 if ($GitHubRepoPath) { $env:ENGINE_ROOT = $GitHubRepoPath }
 if ($WebsiteStagingPath) { $env:WEBSITE_STAGING_PATH = $WebsiteStagingPath }
-$env:CONFIG_PATH = $ConfigPath
+$env:CONFIG_FILE = $ConfigPath
 $env:PORT = 3006
+
+$UiUrl = 'http://127.0.0.1:3006/'
+if (Wait-ForUrl -Url $UiUrl -TimeoutSeconds 2) {
+    Write-Host "Sentinel UI is already running. Opening $UiUrl" -ForegroundColor Green
+    Start-Process $UiUrl
+    return
+}
 
 if (!(Test-Path (Join-Path $UIRoot 'package.json'))) {
     Write-Host ""
@@ -102,21 +109,13 @@ if (!(Test-Path (Join-Path $UIRoot 'node_modules'))) {
 
 Write-Host ""
 Write-Host "STARTING: Sentinel UI Server..." -ForegroundColor Cyan
-Write-Host "   Admin UI:  http://localhost:3005" -ForegroundColor Green
+Write-Host "   Admin UI:  http://localhost:3006" -ForegroundColor Green
 Write-Host "   Website:   http://localhost:3000" -ForegroundColor Gray
 Write-Host ""
 
 Push-Location $UIRoot
 
-$BuildExists = (Test-Path (Join-Path $UIRoot '.next')) -or (Test-Path (Join-Path $UIRoot 'dist')) -or (Test-Path (Join-Path $UIRoot 'build'))
-
-if (!$Dev -and !$BuildExists) {
-    Write-Host "NOTICE: No production build found. Defaulting to development mode ('npm run dev')..." -ForegroundColor Yellow
-    $Dev = $true
-}
-
-$NpmCommand = 'npm run -- -p 3005' 
-$NpmCommand = if ($Dev) { 'npm run dev -- -p 3006' } else { 'npm start -- -p 3006' }
+$NpmCommand = if ($Dev) { 'npm run dev' } else { 'npm start' }
 $LaunchCommand = "Set-Location -Path '$UIRoot'; $NpmCommand"
 
 $PsExecutable = (Get-Process -Id $PID).Path
@@ -125,7 +124,6 @@ Write-Host "STARTING: Sentinel UI process in a separate PowerShell window..." -F
 Start-Process -FilePath $PsExecutable -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-NoExit', '-Command', $LaunchCommand -WorkingDirectory $UIRoot -WindowStyle Normal
 
 # --- BROWSER AUTO-LAUNCH LOGIC ---
-$UiUrl = 'http://localhost:3005/'
 Write-Host "WAITING: Sentinel UI to become available at $UiUrl" -ForegroundColor Gray
 
 if (Wait-ForUrl -Url $UiUrl -TimeoutSeconds 60) {

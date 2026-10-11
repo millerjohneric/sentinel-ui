@@ -28,9 +28,12 @@ npm install
 
 ### 3. Open Browser
 ```
-http://localhost:3001  ← Sentinel UI (Admin)
+http://localhost:3006  ← Sentinel UI (local admin)
+https://millerjohneric.asuscomm.com:3005  ← Sentinel UI (public Nginx proxy)
 http://localhost:3000  ← Website (After sync)
 ```
+
+On first launch, the UI generates a password in the ignored local `.env` file. Sign in with `SENTINEL_UI_USERNAME` (default `sentinel-admin`) and `SENTINEL_UI_PASSWORD` from that file when prompted by the browser.
 
 ---
 

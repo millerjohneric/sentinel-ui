@@ -313,6 +313,44 @@ button:disabled {
     background: #6c757d;
 }
 
+.dot.waiting {
+    background: #ffc107;
+    animation: pulse 1.4s ease-in-out infinite;
+}
+
+.heartbeat-line {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 10px;
+    color: #5c6670;
+    font-size: 0.82em;
+    font-weight: 500;
+}
+
+.heartbeat-dot {
+    width: 8px;
+    height: 8px;
+    flex: 0 0 8px;
+    border-radius: 50%;
+    background: #20a779;
+    box-shadow: 0 0 0 0 rgba(32, 167, 121, 0.42);
+    animation: heartbeat 1.8s ease-out infinite;
+}
+
+@keyframes heartbeat {
+    0% { box-shadow: 0 0 0 0 rgba(32, 167, 121, 0.42); }
+    70%, 100% { box-shadow: 0 0 0 7px rgba(32, 167, 121, 0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .dot.active,
+    .dot.waiting,
+    .heartbeat-dot {
+        animation: none;
+    }
+}
+
 .dot.starting {
     background: #ffc107;
 }
